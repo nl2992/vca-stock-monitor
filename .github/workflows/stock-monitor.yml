@@ -1,0 +1,124 @@
+name: VCA stock monitor
+
+# Manual runs only for now. The hourly schedule below stays commented out
+# until production is explicitly approved; uncomment the two `schedule` lines
+# to activate it (minute 17 UTC, subject to GitHub's cron delays).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        type: choice
+        required: true
+        default: dry-run
+        options:
+          - dry-run
+          - staging
+          - production
+      probe_only:
+        description: "Run the read-only browser probe instead of the monitor"
+        type: boolean
+        required: false
+        default: true
+  # schedule:
+  #   - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+# One run at a time, and a queued run is never cancelled mid-delivery.
+concurrency:
+  group: vca-stock-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: src
+      VCA_MODE: ${{ github.event.inputs.mode || 'dry-run' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install Python dependencies
+        id: deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Install Chromium
+        id: browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Unit and Chromium fixture tests
+        id: tests
+        run: python -m pytest -v
+
+      - name: Read-only browser probe
+        id: probe
+        if: ${{ github.event.inputs.probe_only != 'false' }}
+        continue-on-error: true
+        run: python scripts/browser_probe.py --json-out probe-evidence.json
+
+      - name: Monitor run
+        id: monitor
+        if: ${{ github.event.inputs.probe_only == 'false' }}
+        env:
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          STAGING_RECIPIENT: ${{ secrets.STAGING_RECIPIENT }}
+        continue-on-error: true
+        run: python -m vca_monitor.monitor --mode "$VCA_MODE" --json
+        working-directory: ${{ github.workspace }}
+
+      - name: Upload probe evidence
+        if: ${{ always() && steps.probe.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: probe-evidence.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Distinct from any stock alert: this fires when the workflow itself
+      # broke before or around the application, so a silent failure cannot be
+      # mistaken for "not in stock".
+      - name: Notify workflow failure
+        if: ${{ failure() || steps.deps.outcome == 'failure' || steps.browser.outcome == 'failure' || steps.tests.outcome == 'failure' }}
+        env:
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+        run: |
+          STAGE="unknown"
+          [ "${{ steps.deps.outcome }}" = "failure" ] && STAGE="dependency installation"
+          [ "${{ steps.browser.outcome }}" = "failure" ] && STAGE="Chromium installation"
+          [ "${{ steps.tests.outcome }}" = "failure" ] && STAGE="test suite"
+          python -m vca_monitor.monitor --notify-failure "$STAGE" \
+            "Run ${{ github.run_id }} attempt ${{ github.run_attempt }} failed. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || echo "failure notification could not be delivered"
+
+      # Surface a non-zero application exit after the notification steps have
+      # had their chance to run.
+      - name: Propagate probe/monitor result
+        if: ${{ always() }}
+        run: |
+          PROBE="${{ steps.probe.outcome }}"
+          MONITOR="${{ steps.monitor.outcome }}"
+          echo "probe=$PROBE monitor=$MONITOR"
+          if [ "$PROBE" = "failure" ] || [ "$MONITOR" = "failure" ]; then
+            echo "::warning::The check completed but did not reach a conclusive, fully delivered result. See the step logs and the job summary."
+          fi
