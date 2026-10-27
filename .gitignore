@@ -10,3 +10,6 @@ client_secret*.json
 token*.json
 *.probe.json
 .DS_Store
+
+# Local checker scratch files (now written outside the repo; kept for safety)
+.local-*

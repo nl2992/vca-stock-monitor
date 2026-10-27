@@ -23,8 +23,12 @@ REPO="nl2992/vca-stock-monitor"
 LABEL="vca-in-stock"
 LOG="$HOME/Library/Logs/vca-monitor.log"
 PY="$REPO_DIR/.venv/bin/python"
-EVIDENCE="$REPO_DIR/.local-probe.json"
-BODY="$REPO_DIR/.local-issue-body.md"
+# Scratch files live outside the repo. Writing them inside it left the runtime
+# clone permanently dirty, which made the self-updating `git pull` abort.
+STATE_DIR="$HOME/Library/Application Support/vca-monitor"
+mkdir -p "$STATE_DIR"
+EVIDENCE="$STATE_DIR/probe.json"
+BODY="$STATE_DIR/issue-body.md"
 
 mkdir -p "$(dirname "$LOG")"
 
