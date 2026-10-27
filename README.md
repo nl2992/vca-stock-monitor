@@ -88,7 +88,7 @@ for real stock.
 
 ## Scheduling
 
-The schedule is **active**: `cron: "*/15 * * * *"`, every 15 minutes.
+The schedule is **active**: `cron: "7,22,37,52 * * * *"`, roughly every 15 minutes, deliberately off the contended :00/:15/:30/:45 boundaries.
 
 GitHub's scheduler is best-effort. Runs are commonly several minutes late and
 an interval is occasionally skipped altogether, more so on low-traffic private

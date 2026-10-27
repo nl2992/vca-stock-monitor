@@ -6,10 +6,12 @@ name: VCA stock monitor
 # GitHub's own notification emails do the alerting.
 on:
   schedule:
-    # Every 15 minutes. GitHub's scheduler is best-effort: runs are often
-    # several minutes late and an interval is occasionally skipped entirely,
-    # so treat this as "roughly every 15 minutes", not a guarantee.
-    - cron: "*/15 * * * *"
+    # Roughly every 15 minutes, deliberately NOT on :00/:15/:30/:45. Those are
+    # the most contended minutes on the platform and GitHub drops scheduled
+    # runs under load; "*/15" produced no runs at all across eight slots.
+    # Odd offsets are the documented mitigation. Still best-effort: expect
+    # lateness and the occasional skip.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       simulate:
