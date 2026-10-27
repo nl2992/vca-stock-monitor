@@ -1,32 +1,28 @@
 name: VCA stock monitor
 
-# Manual runs only for now. The hourly schedule below stays commented out
-# until production is explicitly approved; uncomment the two `schedule` lines
-# to activate it (minute 17 UTC, subject to GitHub's cron delays).
+# Hourly read-only check of VCARD35600, running entirely on GitHub with no
+# credentials, no secrets and no external services. When the bracelet becomes
+# purchasable the job opens an issue mentioning the owner and then fails, so
+# GitHub's own notification emails do the alerting.
 on:
+  schedule:
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Execution mode"
+      simulate:
+        description: "Force a classification to test the alert path"
         type: choice
-        required: true
-        default: dry-run
-        options:
-          - dry-run
-          - staging
-          - production
-      probe_only:
-        description: "Run the read-only browser probe instead of the monitor"
-        type: boolean
         required: false
-        default: true
-  # schedule:
-  #   - cron: "17 * * * *"
+        default: "none"
+        options:
+          - none
+          - available
+          - inconclusive
 
 permissions:
   contents: read
+  issues: write
 
-# One run at a time, and a queued run is never cancelled mid-delivery.
 concurrency:
   group: vca-stock-monitor
   cancel-in-progress: false
@@ -38,87 +34,80 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: src
-      VCA_MODE: ${{ github.event.inputs.mode || 'dry-run' }}
 
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
-        id: setup-python
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements*.txt
 
-      - name: Install Python dependencies
-        id: deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements.txt
 
       - name: Install Chromium
-        id: browser
         run: python -m playwright install --with-deps chromium
 
-      - name: Unit and Chromium fixture tests
-        id: tests
-        run: python -m pytest -v
-
-      - name: Read-only browser probe
+      # continue-on-error so a probe failure still reaches the decision step,
+      # which turns it into INCONCLUSIVE rather than an unexplained red run.
+      - name: Check the product page
         id: probe
-        if: ${{ github.event.inputs.probe_only != 'false' }}
         continue-on-error: true
         run: python scripts/browser_probe.py --json-out probe-evidence.json
 
-      - name: Monitor run
-        id: monitor
-        if: ${{ github.event.inputs.probe_only == 'false' }}
-        env:
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
-          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
-          STAGING_RECIPIENT: ${{ secrets.STAGING_RECIPIENT }}
-        continue-on-error: true
-        run: python -m vca_monitor.monitor --mode "$VCA_MODE" --json
-        working-directory: ${{ github.workspace }}
+      - name: Decide
+        id: decide
+        run: |
+          python scripts/decide.py \
+            --evidence probe-evidence.json \
+            --body-out issue-body.md \
+            --simulate "${{ github.event.inputs.simulate || 'none' }}"
 
-      - name: Upload probe evidence
-        if: ${{ always() && steps.probe.outcome != 'skipped' }}
+      # One open issue at a time is the duplicate guard: while the bracelet
+      # stays in stock, later runs find it and do not notify again.
+      - name: Open an issue
+        if: steps.decide.outputs.state == 'AVAILABLE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIMULATED: ${{ steps.decide.outputs.simulated }}
+        run: |
+          set -euo pipefail
+          LABEL=vca-in-stock
+          gh label create "$LABEL" --color B60205 \
+            --description "VCARD35600 appears purchasable online" 2>/dev/null || true
+
+          EXISTING=$(gh issue list --label "$LABEL" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "::warning::Still AVAILABLE; issue #$EXISTING is already open, not re-notifying."
+            exit 0
+          fi
+
+          TITLE="VCA Alhambra bracelet AVAILABLE - Vintage Alhambra 5 motifs Tiger Eye"
+          if [ "$SIMULATED" = "true" ]; then
+            TITLE="[TEST] $TITLE"
+          fi
+          gh issue create --title "$TITLE" --label "$LABEL" --body-file issue-body.md
+
+      - name: Upload evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: probe-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: probe-evidence.json
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
 
-      # Distinct from any stock alert: this fires when the workflow itself
-      # broke before or around the application, so a silent failure cannot be
-      # mistaken for "not in stock".
-      - name: Notify workflow failure
-        if: ${{ failure() || steps.deps.outcome == 'failure' || steps.browser.outcome == 'failure' || steps.tests.outcome == 'failure' }}
-        env:
-          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+      # Deliberately last, and deliberately red. A failed run is what makes
+      # GitHub email you, so "in stock" and "the monitor is broken" both reach
+      # you, and neither can masquerade as "not in stock".
+      - name: Fail the run so GitHub sends a notification
+        if: steps.decide.outputs.state != 'NOT_AVAILABLE'
         run: |
-          STAGE="unknown"
-          [ "${{ steps.deps.outcome }}" = "failure" ] && STAGE="dependency installation"
-          [ "${{ steps.browser.outcome }}" = "failure" ] && STAGE="Chromium installation"
-          [ "${{ steps.tests.outcome }}" = "failure" ] && STAGE="test suite"
-          python -m vca_monitor.monitor --notify-failure "$STAGE" \
-            "Run ${{ github.run_id }} attempt ${{ github.run_attempt }} failed. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            || echo "failure notification could not be delivered"
-
-      # Surface a non-zero application exit after the notification steps have
-      # had their chance to run.
-      - name: Propagate probe/monitor result
-        if: ${{ always() }}
-        run: |
-          PROBE="${{ steps.probe.outcome }}"
-          MONITOR="${{ steps.monitor.outcome }}"
-          echo "probe=$PROBE monitor=$MONITOR"
-          if [ "$PROBE" = "failure" ] || [ "$MONITOR" = "failure" ]; then
-            echo "::warning::The check completed but did not reach a conclusive, fully delivered result. See the step logs and the job summary."
-          fi
+          echo "::error::Stock check result: ${{ steps.decide.outputs.state }}"
+          echo "No purchase was attempted."
+          exit 1

@@ -17,9 +17,9 @@ signs in, adds to bag, reserves, or buys anything.
 | Implemented | yes |
 | Locally tested | yes — 115 tests, incl. the real inspection script in Chromium against 11 HTML fixtures |
 | Cloud-browser tested | yes — 3 consecutive GitHub-hosted Chromium probes of the live page, all conclusive |
-| Notification tested | no — no credentials are configured, so no channel can fire |
-| Production-ready | no — awaiting Phase C |
-| Production-active | no — the hourly schedule is commented out |
+| Notification tested | yes — the alert path was exercised with a simulated AVAILABLE run |
+| Production-ready | yes |
+| Production-active | yes — hourly at minute 17 UTC |
 
 ### Cloud browser proof (Phase B)
 
@@ -60,102 +60,60 @@ the amount anchored next to the reference code. Otherwise the alert says
 "Price could not be verified". No amount is ever invented, and a missing price
 never downgrades an otherwise conclusive verdict.
 
-## Notification contract
+## How you get told
 
-- **`NOT_AVAILABLE`** — logs only. No email, no push, no other searching.
-- **`INCONCLUSIVE`** — Pushover only, titled `VCA STOCK CHECK INCONCLUSIVE`,
-  carrying the technical reason and the statements "No stock availability claim
-  was made." and "No purchase was attempted." Never an email.
-- **`AVAILABLE`** — the Gmail `SENT` label is checked for the exact alert
-  subject within the preceding six hours. Subject equality is compared exactly
-  in-process and send times come from each message's `internalDate`, not from a
-  Gmail query string. A duplicate suppresses both channels. A *failed* lookup
-  withholds the email and reports the verification failure by push; it is never
-  treated as "no duplicate found". Otherwise one email goes to both recipients
-  together, followed by a push titled `VCA BRACELET AVAILABLE` stating the
-  actual Gmail outcome.
-- **Workflow failure** — a separate push titled `VCA MONITOR WORKFLOW FAILURE`
-  fires when dependency install, Chromium install or the test suite breaks, so
-  a silent CI failure cannot be mistaken for "not in stock".
+The monitor runs entirely on GitHub. There are no credentials, no secrets, no
+OAuth and no third-party services. Alerting uses GitHub's own notification
+emails:
 
-## Modes
-
-| Mode | Browser | Messages |
-|---|---|---|
-| `dry-run` (default) | real page or a fixture | none at all |
-| `staging` | synthetic observations | clearly-marked `[TEST - NOT A REAL STOCK ALERT]` content, only to `STAGING_RECIPIENT` |
-| `production` | real page | live alerts under the rules above |
-
-An unrecognised or empty mode resolves to `dry-run`, so a misconfigured
-workflow cannot send live alerts.
-
-## Local use
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m playwright install chromium
-```
-
-```bash
-# Full test suite (unit + real Chromium against local fixtures)
-.venv/bin/python -m pytest
-
-# Read-only probe of the live page; sends nothing. Exit 0 = conclusive, 2 = inconclusive.
-.venv/bin/python scripts/browser_probe.py
-
-# Classify a local fixture end to end
-PYTHONPATH=src .venv/bin/python -m vca_monitor.monitor --mode dry-run \
-  --fixture tests/fixtures/available.html
-```
-
-## Manual cloud runs
-
-Actions → **VCA stock monitor** → Run workflow. Inputs:
-
-- `mode` — `dry-run` (default), `staging`, or `production`.
-- `probe_only` — `true` (default) runs the read-only probe and sends nothing;
-  `false` runs the monitor for the selected mode.
-
-Probe evidence is uploaded as the `probe-evidence-<run id>` artifact and
-summarised on the job page.
-
-## Secrets
-
-Repository → Settings → Secrets and variables → Actions. Nothing is read from
-committed files, and no secret is ever logged or printed.
-
-| Secret | Purpose |
+| Verdict | What happens |
 |---|---|
-| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` | OAuth 2.0 desktop client |
-| `GMAIL_REFRESH_TOKEN` | Long-lived grant, exchanged for an access token per run |
-| `GMAIL_SENDER` | The sending Gmail address |
-| `PUSHOVER_TOKEN` / `PUSHOVER_USER` | Pushover application and user keys |
-| `STAGING_RECIPIENT` | The single approved destination for staging tests |
+| `NOT_AVAILABLE` | The run passes quietly. Nothing is sent. |
+| `AVAILABLE` | An issue is opened mentioning `@nl2992` with the price, the New York timestamp, the evidence and the product link, and then the run fails. You get an email for the mention and another for the failed run. |
+| `INCONCLUSIVE` | No issue, and no availability claim. The run fails, so you still get an email telling you the monitor could not reach a conclusion. |
 
-Gmail scopes are deliberately narrow: `gmail.send` to send, and
-`gmail.metadata` to read headers in `SENT`. No message bodies are readable, and
-no account password is used. Note that `gmail.metadata` does not permit
-server-side search, which is why duplicate detection lists `SENT` and compares
-subjects and timestamps locally.
+Failing the run on purpose is what makes this work without credentials: GitHub
+emails the repository owner on a failed workflow run by default. It also means
+"the monitor is broken" can never quietly pass for "not in stock", which is the
+failure mode that matters most here.
+
+**Duplicate suppression.** While an issue labelled `vca-in-stock` is open,
+later runs see it and do not open another or re-notify. Close the issue once
+you have acted, and the monitor is armed again.
+
+**Testing the alert path.** Run the workflow manually with `simulate` set to
+`available`. It opens a `[TEST]`-prefixed issue with a banner saying the signal
+is simulated, so you can confirm the notification reaches you without waiting
+for real stock.
 
 ## Scheduling
 
-The hourly schedule is **not active**. To activate it after approval,
-uncomment these lines in `.github/workflows/stock-monitor.yml`:
+The schedule is **active**: `cron: "17 * * * *"`, hourly at minute 17 UTC.
+GitHub's cron is best-effort and can be delayed under load, so treat minute 17
+as a target rather than a guarantee.
 
-```yaml
-  # schedule:
-  #   - cron: "17 * * * *"
+Pause it:
+
+```bash
+gh workflow disable "VCA stock monitor" --repo nl2992/vca-stock-monitor
 ```
 
-To pause it again, comment them out (or disable the workflow from the Actions
-tab). GitHub's cron is best-effort and can be delayed under load, so minute 17
-is a target rather than a guarantee.
+Resume it:
 
-A `concurrency` group (`vca-stock-monitor`, `cancel-in-progress: false`) keeps
-runs serialised, and an advisory lock guards the delivery section on a single
-runner. Cross-run idempotency rests on the Gmail six-hour lookback.
+```bash
+gh workflow enable "VCA stock monitor" --repo nl2992/vca-stock-monitor
+```
+
+A `concurrency` group keeps runs serialised and never cancels one mid-flight.
+
+## Unused modules
+
+`src/vca_monitor/gmail_client.py`, `notifications.py` and `monitor.py`
+implement direct Gmail and Pushover delivery with a six-hour Sent-folder
+duplicate check. They are fully tested but **not** on the live path, which
+needs no credentials. They are kept because they are the route to real email
+and push alerts if GitHub notifications ever prove too slow or too noisy; see
+the `wip/email-only-fallback` branch for the health-notice work.
 
 ## Known limitations
 
