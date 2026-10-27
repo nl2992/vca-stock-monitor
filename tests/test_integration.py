@@ -8,7 +8,7 @@ actually have been delivered.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,7 +18,21 @@ from vca_monitor.config import AVAILABILITY_SUBJECT, EMAIL_RECIPIENTS, Mode, Sec
 from vca_monitor.models import Availability, Observation
 from vca_monitor.monitor import AlertLock, EXIT_ERROR, EXIT_INCONCLUSIVE, EXIT_OK
 from vca_monitor.notifications import AVAILABLE_PUSH_TITLE, INCONCLUSIVE_PUSH_TITLE, TEST_PREFIX
-from tests.test_gmail import FakeGmail, message
+from tests.test_gmail import FakeGmail
+
+
+def recent_message(id_, minutes_ago, subject=AVAILABILITY_SUBJECT):
+    """A SENT entry positioned relative to the real clock.
+
+    `monitor.run` lets `find_recent_duplicate` default to `datetime.now`, so a
+    fixture built from a fixed constant would drift in and out of the six-hour
+    window depending on when the suite happens to run.
+    """
+    return {
+        "id": id_,
+        "sent_at": datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+        "subject": subject,
+    }
 
 AVAILABLE = Observation(
     url="https://example.test",
@@ -126,7 +140,7 @@ def test_duplicate_within_six_hours_suppresses_both_channels(
     monkeypatch, full_secrets, poster
 ):
     monkeypatch.setattr(monitor, "observe", lambda *a, **k: AVAILABLE)
-    service = FakeGmail([message("m1", minutes_ago=30)])
+    service = FakeGmail([recent_message("m1", minutes_ago=30)])
     report = monitor.run(
         Mode.PRODUCTION, secrets=full_secrets, service=service, poster=poster
     )
@@ -138,7 +152,7 @@ def test_duplicate_within_six_hours_suppresses_both_channels(
 
 def test_alert_older_than_six_hours_does_not_suppress(monkeypatch, full_secrets, poster):
     monkeypatch.setattr(monitor, "observe", lambda *a, **k: AVAILABLE)
-    service = FakeGmail([message("m1", minutes_ago=400)])
+    service = FakeGmail([recent_message("m1", minutes_ago=400)])
     monitor.run(Mode.PRODUCTION, secrets=full_secrets, service=service, poster=poster)
     assert len(service.sent) == 1
     assert len(poster.calls) == 1
