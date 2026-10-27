@@ -114,6 +114,56 @@ gh workflow enable "VCA stock monitor" --repo nl2992/vca-stock-monitor
 
 A `concurrency` group keeps runs serialised and never cancels one mid-flight.
 
+## The local checker (launchd)
+
+GitHub's scheduler produced no runs at all across ten consecutive slots, so
+the dependable cadence comes from a launchd agent on the Mac. Actions stays
+enabled as coverage for when the Mac is asleep, and may well start firing on
+its own later.
+
+Both checkers run the same probe and classifier and notify the same way, and
+both treat a single open `vca-in-stock` issue as the duplicate guard, so
+whichever sees it first opens the issue and the other stays quiet.
+
+| | Runtime clone | Working copy |
+|---|---|---|
+| Path | `~/vca-monitor-runtime` | `~/Desktop/AI Tools/vca-stock-monitor` |
+| Used by | the launchd agent | you, and manual commands |
+
+The runtime clone exists because **launchd cannot execute anything under
+`~/Desktop`, `~/Documents` or `~/Downloads`** without Full Disk Access; the
+first attempt failed with exit code 126 and `Operation not permitted`. The
+scheduled script therefore lives outside those folders and `git pull`s from
+`main` on each run, so pushing a fix reaches it without a manual step.
+
+Check on it:
+
+```bash
+tail -20 ~/Library/Logs/vca-monitor.log
+```
+
+Pause it:
+
+```bash
+launchctl bootout gui/$(id -u)/com.nigel.vca-monitor
+```
+
+Resume it:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nigel.vca-monitor.plist
+```
+
+Run it once by hand, which also exercises the alert path if you set
+`VCA_SIMULATE=available`:
+
+```bash
+~/vca-monitor-runtime/scripts/local_check.sh
+```
+
+Its one weakness: the Mac has to be awake. To keep it checking overnight, stop
+the machine sleeping on power, or run `caffeinate -s`.
+
 ## Unused modules
 
 `src/vca_monitor/gmail_client.py`, `notifications.py` and `monitor.py`
