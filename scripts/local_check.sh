@@ -27,7 +27,13 @@ EVIDENCE="$REPO_DIR/.local-probe.json"
 BODY="$REPO_DIR/.local-issue-body.md"
 
 mkdir -p "$(dirname "$LOG")"
-log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
+
+# Simulated runs are tagged in the log. Without this a test run writes a bare
+# "AVAILABLE" line that is indistinguishable from a real stock hit when the log
+# is read back days later.
+LOG_TAG=""
+[ "${VCA_SIMULATE:-none}" != "none" ] && LOG_TAG="[SIMULATED] "
+log() { printf '%s  %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$LOG_TAG" "$*" >> "$LOG"; }
 
 notify() {  # $1 = title, $2 = message
   /usr/bin/osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null || true
