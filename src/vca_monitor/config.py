@@ -32,7 +32,16 @@ IDENTITY_MATERIAL_TOKENS = ("tiger eye", "tiger's eye", "tigers eye")
 
 DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 
-EMAIL_RECIPIENTS = ("nl2992@columbia.edu", "hyutong88@gmail.com")
+# Recipients are read from the environment, never committed: this repository is
+# public, and publishing anyone's address (least of all a third party's) invites
+# scraping. Set VCA_EMAIL_RECIPIENTS to a comma-separated list, or as a GitHub
+# secret, if the direct-email path is ever enabled. The live GitHub-only
+# alerting path does not use this at all.
+EMAIL_RECIPIENTS: tuple[str, ...] = tuple(
+    address.strip()
+    for address in (os.environ.get("VCA_EMAIL_RECIPIENTS") or "").split(",")
+    if address.strip()
+)
 AVAILABILITY_SUBJECT = (
     "VCA Alhambra bracelet AVAILABLE - Vintage Alhambra 5 motifs Tiger Eye"
 )
