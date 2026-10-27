@@ -15,11 +15,26 @@ signs in, adds to bag, reserves, or buys anything.
 | Capability | State |
 |---|---|
 | Implemented | yes |
-| Locally tested | yes (115 tests, incl. real Chromium against 11 HTML fixtures) |
-| Cloud-browser tested | pending Phase B |
-| Notification tested | pending Phase C (no credentials configured) |
-| Production-ready | no |
+| Locally tested | yes — 115 tests, incl. the real inspection script in Chromium against 11 HTML fixtures |
+| Cloud-browser tested | yes — 3 consecutive GitHub-hosted Chromium probes of the live page, all conclusive |
+| Notification tested | no — no credentials are configured, so no channel can fire |
+| Production-ready | no — awaiting Phase C |
 | Production-active | no — the hourly schedule is commented out |
+
+### Cloud browser proof (Phase B)
+
+Three read-only `workflow_dispatch` runs against the live product page, with
+notifications disabled and no secrets configured:
+
+| Run | Result | `data-show-cta` | Add to Bag elements / visible | Price | Duration | Attempts |
+|---|---|---|---|---|---|---|
+| [40427111819](https://github.com/nl2992/vca-stock-monitor/actions/runs/40427111819) | `NOT_AVAILABLE` | `order-by-phone` | 2 / 0 | $5,850 (verified) | 7.09 s | 1 |
+| [40427272392](https://github.com/nl2992/vca-stock-monitor/actions/runs/40427272392) | `NOT_AVAILABLE` | `order-by-phone` | 2 / 0 | $5,850 (verified) | 7.24 s | 1 |
+| [40427428394](https://github.com/nl2992/vca-stock-monitor/actions/runs/40427428394) | `NOT_AVAILABLE` | `order-by-phone` | 2 / 0 | $5,850 (verified) | 7.48 s | 1 |
+
+Every run verified page identity (title, material and reference `VCARD35600`),
+found the product controls, detected no bot wall, needed no retry, and closed
+the browser. GitHub-hosted Chromium is **not** blocked by the site.
 
 ## How it decides
 
