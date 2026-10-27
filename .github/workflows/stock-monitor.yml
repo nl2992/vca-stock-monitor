@@ -1,12 +1,15 @@
 name: VCA stock monitor
 
-# Hourly read-only check of VCARD35600, running entirely on GitHub with no
+# Read-only check of VCARD35600 every 15 minutes, running entirely on GitHub with no
 # credentials, no secrets and no external services. When the bracelet becomes
 # purchasable the job opens an issue mentioning the owner and then fails, so
 # GitHub's own notification emails do the alerting.
 on:
   schedule:
-    - cron: "17 * * * *"
+    # Every 15 minutes. GitHub's scheduler is best-effort: runs are often
+    # several minutes late and an interval is occasionally skipped entirely,
+    # so treat this as "roughly every 15 minutes", not a guarantee.
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       simulate:

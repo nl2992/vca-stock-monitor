@@ -19,7 +19,7 @@ signs in, adds to bag, reserves, or buys anything.
 | Cloud-browser tested | yes — 3 consecutive GitHub-hosted Chromium probes of the live page, all conclusive |
 | Notification tested | yes — the alert path was exercised with a simulated AVAILABLE run |
 | Production-ready | yes |
-| Production-active | yes — hourly at minute 17 UTC |
+| Production-active | yes — every 15 minutes |
 
 ### Cloud browser proof (Phase B)
 
@@ -88,9 +88,17 @@ for real stock.
 
 ## Scheduling
 
-The schedule is **active**: `cron: "17 * * * *"`, hourly at minute 17 UTC.
-GitHub's cron is best-effort and can be delayed under load, so treat minute 17
-as a target rather than a guarantee.
+The schedule is **active**: `cron: "*/15 * * * *"`, every 15 minutes.
+
+GitHub's scheduler is best-effort. Runs are commonly several minutes late and
+an interval is occasionally skipped altogether, more so on low-traffic private
+repositories, so the real-world cadence is closer to every 15 to 40 minutes.
+
+At this interval the workflow uses roughly 2,880 Actions minutes per month,
+which exceeds the 2,000 free minutes included for private repositories. Making
+the repository public removes the cost entirely, since public repositories get
+unlimited free Actions minutes, and this repository contains no secrets by
+design.
 
 Pause it:
 
