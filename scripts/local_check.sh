@@ -43,6 +43,28 @@ notify() {  # $1 = title, $2 = message
   /usr/bin/osascript -e "display notification \"$2\" with title \"$1\"" 2>/dev/null || true
 }
 
+# A quiet banner lost us a real 13-hour buying window on 2026-10-29. An
+# AVAILABLE verdict is rare and time-critical, so it gets the loudest
+# treatment the OS allows: a sounded notification repeated a few times, a
+# spoken announcement, and the product page opened in the default browser so
+# it is physically in front of you.
+shout() {  # $1 = message
+  for _ in 1 2 3; do
+    /usr/bin/osascript -e "display notification \"$1\" with title \"VCA BRACELET AVAILABLE\" sound name \"Sosumi\"" 2>/dev/null || true
+    sleep 2
+  done
+  /usr/bin/osascript -e 'display alert "VCA BRACELET AVAILABLE" message "The Tiger Eye 5-motif bracelet is purchasable online right now. Go buy it." as critical' >/dev/null 2>&1 &
+  /usr/bin/say "Van Cleef bracelet is available now" 2>/dev/null || true
+  /usr/bin/open "https://www.vancleefarpels.com/us/en/collections/jewelry/alhambra/vcard35600---vintage-alhambra-bracelet-5-motifs.html" 2>/dev/null || true
+}
+
+# Consecutive-failure tracking, so a dead checker cannot stay silent. The
+# chromium cache was wiped on 2026-10-27 and 262 checks failed over three days
+# while this script logged quietly and exited 0.
+FAILFILE="$STATE_DIR/consecutive_failures"
+BROKEN_LABEL="vca-monitor-broken"
+read_failures() { cat "$FAILFILE" 2>/dev/null || echo 0; }
+
 cd "$REPO_DIR" || { log "FATAL: repo directory missing"; exit 1; }
 
 # Keep the runtime clone in step with main, so a fix pushed to GitHub reaches
@@ -82,12 +104,36 @@ except Exception as exc:
 case "$STATE" in
   NOT_AVAILABLE)
     log "not available  ($REASON)"
+    if [ "$(read_failures)" != "0" ]; then
+      echo 0 > "$FAILFILE"
+      if command -v gh >/dev/null 2>&1; then
+        B=$(gh issue list --repo "$REPO" --label "$BROKEN_LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
+        [ -n "$B" ] && gh issue close "$B" --repo "$REPO" \
+          --comment "Recovered: a check completed successfully." >/dev/null 2>&1 \
+          && log "closed monitor-broken issue #$B"
+      fi
+    fi
     exit 0
     ;;
   INCONCLUSIVE)
-    # Never treated as out of stock. Logged quietly; the local notification
-    # only appears if it keeps happening, which the log makes visible.
-    log "INCONCLUSIVE  ($REASON)  no availability claim made, no purchase attempted"
+    # Never treated as out of stock. Three in a row (~45 minutes) means the
+    # checker is broken rather than merely unlucky, and that must be noisy.
+    N=$(( $(read_failures) + 1 ))
+    echo "$N" > "$FAILFILE"
+    log "INCONCLUSIVE #$N  ($REASON)  no availability claim made, no purchase attempted"
+    if [ "$N" -eq 3 ] || [ $(( N % 96 )) -eq 0 ]; then
+      notify "VCA monitor BROKEN" "$N checks in a row failed. Stock is NOT being monitored."
+      if command -v gh >/dev/null 2>&1; then
+        gh label create "$BROKEN_LABEL" --repo "$REPO" --color D93F0B \
+          --description "The local checker is failing" >/dev/null 2>&1 || true
+        if [ -z "$(gh issue list --repo "$REPO" --label "$BROKEN_LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null)" ]; then
+          printf '@nl2992\n\nThe local launchd checker has failed %s times in a row, so the bracelet is **not** being monitored locally.\n\nLatest reason:\n\n```\n%s\n```\n\nNo availability claim was made. No purchase was attempted.\n\nUsual cause: the Playwright browser cache under `~/Library/Caches/ms-playwright` was cleared. Fix:\n\n```\ncd ~/vca-monitor-runtime && .venv/bin/python -m playwright install chromium\n```\n\nThis issue closes itself on the next successful check.\n' "$N" "$REASON" > "$STATE_DIR/broken-body.md"
+          gh issue create --repo "$REPO" --title "VCA monitor is BROKEN - $N consecutive failed checks" \
+            --label "$BROKEN_LABEL" --body-file "$STATE_DIR/broken-body.md" >/dev/null 2>&1 \
+            && log "opened a monitor-broken issue"
+        fi
+      fi
+    fi
     exit 0
     ;;
   AVAILABLE)
@@ -125,9 +171,10 @@ gh label create "$LABEL" --repo "$REPO" --color B60205 \
 if URL=$(gh issue create --repo "$REPO" --title "$TITLE" --label "$LABEL" \
            --body-file "$BODY" 2>&1); then
   log "issue opened: $URL"
-  notify "VCA bracelet AVAILABLE" "Issue opened. Check your email and the product page."
+  echo 0 > "$FAILFILE"
+  shout "Price $( [ -f "$EVIDENCE" ] && echo "\$5,850" ). Issue opened. BUY IT NOW."
 else
   log "AVAILABLE but opening the issue FAILED: $URL"
-  notify "VCA bracelet AVAILABLE" "GitHub issue failed. Check the page now."
+  shout "GitHub issue failed, but the bracelet IS available. Check the page now."
   exit 1
 fi
