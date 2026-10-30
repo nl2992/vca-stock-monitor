@@ -62,8 +62,24 @@ shout() {  # $1 = message
 # chromium cache was wiped on 2026-10-27 and 262 checks failed over three days
 # while this script logged quietly and exited 0.
 FAILFILE="$STATE_DIR/consecutive_failures"
+# Set once per availability window so the cart grab fires a single time, not
+# every five minutes for as long as the bracelet stays in stock.
+CARTMARK="$STATE_DIR/cart_grabbed"
 BROKEN_LABEL="vca-monitor-broken"
 read_failures() { cat "$FAILFILE" 2>/dev/null || echo 0; }
+
+# Adds the bracelet to a real, visible cart in Google Chrome using a dedicated
+# persistent profile, so you can take the window over and check out yourself.
+# It never touches checkout, payment or address fields. Once per window, and
+# disable with VCA_AUTO_CART=0.
+grab_to_cart() {
+  [ "${VCA_AUTO_CART:-1}" = "1" ] || { log "auto-cart disabled by VCA_AUTO_CART"; return 0; }
+  [ -f "$CARTMARK" ] && { log "cart grab already done for this window"; return 0; }
+  : > "$CARTMARK"
+  log "adding to a real Chrome cart"
+  nohup "$PY" "$REPO_DIR/scripts/grab_to_cart.py" >>"$STATE_DIR/grab.log" 2>&1 &
+  log "cart grab launched (see $STATE_DIR/grab.log)"
+}
 
 cd "$REPO_DIR" || { log "FATAL: repo directory missing"; exit 1; }
 
@@ -104,6 +120,7 @@ except Exception as exc:
 case "$STATE" in
   NOT_AVAILABLE)
     log "not available  ($REASON)"
+    rm -f "$CARTMARK"
     if [ "$(read_failures)" != "0" ]; then
       echo 0 > "$FAILFILE"
       if command -v gh >/dev/null 2>&1; then
@@ -172,6 +189,7 @@ if URL=$(gh issue create --repo "$REPO" --title "$TITLE" --label "$LABEL" \
            --body-file "$BODY" 2>&1); then
   log "issue opened: $URL"
   echo 0 > "$FAILFILE"
+  grab_to_cart
   shout "Price $( [ -f "$EVIDENCE" ] && echo "\$5,850" ). Issue opened. BUY IT NOW."
 else
   log "AVAILABLE but opening the issue FAILED: $URL"
